@@ -1,43 +1,89 @@
-# ======================================================
-# ONE COMMAND REAL-TIME PIPELINE
-# ======================================================
+# ==========================================================
+# Continuous Production Pipeline Runner (Resilient Version)
+# ==========================================================
 
-import sys
-from pathlib import Path
 import time
-import uuid
+import traceback
+from uuid import uuid4
+from datetime import datetime
 
-# ------------------------------------------------------
-# Ensure project root on path (robust execution)
-# ------------------------------------------------------
-PROJECT_ROOT = Path(__file__).resolve().parents[1]
-
-if str(PROJECT_ROOT) not in sys.path:
-    sys.path.insert(0, str(PROJECT_ROOT))
-
+from pipeline.status import write_status
 from pipeline.ingest import run_ingestion
 from pipeline.clean import run_cleaning
 from pipeline.analytics import run_analytics
 
-RUN_ID = str(uuid.uuid4())[:8]
+
+# ==========================================================
+# CONFIGURATION
+# ==========================================================
+
+BASE_INTERVAL = 600            # 10 minutes normal run
+MAX_BACKOFF = 1800             # 30 minutes max delay
+MAX_FAILURES_BEFORE_DEGRADED = 5
 
 
-def timed_step(name, fn):
-    print("\n" + "=" * 60)
-    print(f"🚀 [{RUN_ID}] {name}")
-    print("=" * 60)
+# ==========================================================
+# PIPELINE EXECUTION
+# ==========================================================
 
-    start = time.time()
-    fn()
-    print(f"✅ {name} finished in {round(time.time()-start,2)}s")
+def run_pipeline():
+    run_id = uuid4().hex[:8]
 
+    print(f"\n🚀 [{run_id}] Pipeline Started")
+
+    run_ingestion()
+    run_cleaning()
+    run_analytics()
+
+    write_status("success", run_id)
+    print(f"🎉 [{run_id}] Pipeline Completed Successfully")
+
+
+# ==========================================================
+# CONTINUOUS SCHEDULER WITH BACKOFF
+# ==========================================================
 
 if __name__ == "__main__":
 
-    print(f"🔥 PIPELINE STARTED | RUN ID: {RUN_ID}")
+    print("🛰️ Continuous Pipeline Scheduler Started")
 
-    timed_step("Ingestion", run_ingestion)
-    timed_step("Cleaning", run_cleaning)
-    timed_step("Analytics", run_analytics)
+    consecutive_failures = 0
 
-    print("\n🎉 PIPELINE COMPLETED SUCCESSFULLY")
+    while True:
+        try:
+            run_pipeline()
+
+            # Reset on success
+            consecutive_failures = 0
+            sleep_time = BASE_INTERVAL
+
+        except Exception:
+            consecutive_failures += 1
+
+            error_message = traceback.format_exc()
+            run_id = uuid4().hex[:8]
+
+            print(f"❌ [{run_id}] Pipeline Failed")
+            print(error_message)
+
+            write_status(
+                "failed",
+                run_id,
+                {
+                    "error": error_message,
+                    "consecutive_failures": consecutive_failures,
+                    "timestamp": datetime.utcnow().isoformat()
+                }
+            )
+
+            # Exponential backoff
+            sleep_time = min(
+                BASE_INTERVAL * (2 ** consecutive_failures),
+                MAX_BACKOFF
+            )
+
+            if consecutive_failures >= MAX_FAILURES_BEFORE_DEGRADED:
+                print("⚠️ SYSTEM DEGRADED — Too many consecutive failures")
+
+        print(f"⏳ Sleeping {sleep_time} seconds...\n")
+        time.sleep(sleep_time)

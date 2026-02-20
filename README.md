@@ -43,3 +43,11 @@ Streamlit
 Plotly
 
 Docker
+
+## 🚀 Run with Docker
+
+docker compose up --build
+
+Then visit:
+http://localhost:8501
+

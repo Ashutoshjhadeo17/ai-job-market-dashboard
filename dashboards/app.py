@@ -1,9 +1,9 @@
 # ======================================================
-# AI Job Market Intelligence Dashboard (FINAL STABLE)
+# AI Job Market Intelligence Dashboard (PRODUCTION)
 # ======================================================
 
 # --------------------------------------------------
-# 1. PATH FIX — MUST COME FIRST
+# 1. PATH FIX (MUST COME FIRST)
 # --------------------------------------------------
 import sys
 from pathlib import Path
@@ -16,13 +16,14 @@ if str(PROJECT_ROOT) not in sys.path:
 # --------------------------------------------------
 # 2. IMPORTS
 # --------------------------------------------------
-from config.settings import DEFAULT_TOP_N
 from typing import Dict
+from datetime import datetime, timezone
+
 import streamlit as st
 import pandas as pd
-st.caption(f"Last dashboard refresh: {pd.Timestamp.now().strftime('%Y-%m-%d %H:%M:%S')}")
 import plotly.express as px
 
+from config.settings import DEFAULT_TOP_N
 from analytics.load_metrics import load_all_metrics
 from analytics.salary_insights import (
     prepare_salary_dataframe,
@@ -30,9 +31,10 @@ from analytics.salary_insights import (
     highest_paying_locations,
     salary_distribution,
 )
+from pipeline.status import read_status
 
 # --------------------------------------------------
-# 3. PAGE CONFIG
+# 3. PAGE CONFIG (MUST BE FIRST STREAMLIT CALL)
 # --------------------------------------------------
 st.set_page_config(
     page_title="AI Job Market Intelligence",
@@ -44,11 +46,57 @@ st.title("🤖 AI Job Market Intelligence Dashboard")
 st.caption("Real-time analytics for AI hiring trends")
 
 # --------------------------------------------------
-# 4. LOAD DATA (CACHED)
+# 4. LIVE SYSTEM STATUS PANEL (ELITE VERSION)
+# --------------------------------------------------
+st.subheader("🛰️ System Status")
+
+status = read_status()
+
+if not status:
+    st.error("❌ No pipeline run detected.")
+else:
+
+    run_time = datetime.fromisoformat(status["timestamp"])
+
+    age_minutes = (
+        datetime.now(timezone.utc) - run_time.replace(tzinfo=timezone.utc)
+    ).total_seconds() / 60
+
+    pipeline_status = status["status"]
+
+    # -----------------------------
+    # HEALTH LOGIC
+    # -----------------------------
+    if pipeline_status == "failed":
+        health = "🔴 FAILED"
+    elif age_minutes > 60:
+        health = "🟡 STALE DATA"
+    else:
+        health = "🟢 HEALTHY"
+
+    s1, s2, s3, s4 = st.columns(4)
+
+    s1.metric("Health", health)
+    s2.metric("Pipeline Status", pipeline_status.upper())
+    s3.metric("Run ID", status["run_id"])
+    s4.metric("Data Age (min)", f"{age_minutes:.1f}")
+
+    # Show failure details if present
+    if pipeline_status == "failed":
+        details = status.get("details", {})
+        err = details.get("error", "Unknown error")
+        st.error(f"Last pipeline error: {err}")
+
+    if age_minutes > 60:
+        st.warning("⚠️ Data older than 1 hour — pipeline may need rerun.")
+
+# --------------------------------------------------
+# 5. LOAD DATA (AUTO REFRESH)
 # --------------------------------------------------
 @st.cache_data(ttl=300, show_spinner=False)
 def get_data() -> Dict[str, pd.DataFrame]:
     return load_all_metrics()
+
 
 metrics = get_data()
 
@@ -57,20 +105,14 @@ locations = metrics.get("locations", pd.DataFrame())
 jobs = metrics.get("jobs", pd.DataFrame())
 clean_df = metrics.get("clean", pd.DataFrame())
 
-# Salary prep (SAFE)
 salary_df = prepare_salary_dataframe(clean_df)
 
 # --------------------------------------------------
-# 5. SIDEBAR
+# 6. SIDEBAR CONTROLS
 # --------------------------------------------------
 st.sidebar.header("⚙️ Controls")
 
-top_n = st.sidebar.slider(
-    "Top N Results",
-    5,
-    50,
-    DEFAULT_TOP_N
-)
+top_n = st.sidebar.slider("Top N Results", 5, 50, DEFAULT_TOP_N)
 
 skill_search = st.sidebar.text_input("Search Skill")
 location_search = st.sidebar.text_input("Search Location")
@@ -88,14 +130,14 @@ dataset_status(locations, "Locations")
 dataset_status(jobs, "Jobs")
 
 # --------------------------------------------------
-# 6. HELPERS
+# 7. HELPERS
 # --------------------------------------------------
-def safe_search(df: pd.DataFrame, column: str, term: str):
+def safe_search(df, column, term):
     if df.empty or column not in df.columns or not term:
         return df
     return df[df[column].astype(str).str.contains(term, case=False, na=False)]
 
-def safe_top(df: pd.DataFrame, value_col: str):
+def safe_top(df, value_col):
     if df.empty or value_col not in df.columns:
         return pd.DataFrame()
     return df.sort_values(value_col, ascending=False).head(top_n)
@@ -118,7 +160,7 @@ def safe_plot_bar(df, x, y, title, height=600, color=None):
     st.plotly_chart(fig, width="stretch")
 
 # --------------------------------------------------
-# 7. FILTER DATA
+# 8. FILTER DATA
 # --------------------------------------------------
 skills = safe_search(skills, "skill", skill_search)
 locations = safe_search(locations, "location", location_search)
@@ -128,7 +170,7 @@ top_locations = safe_top(locations, "job_count")
 top_jobs = safe_top(jobs, "openings")
 
 # --------------------------------------------------
-# 8. KPI SNAPSHOT
+# 9. KPI SNAPSHOT
 # --------------------------------------------------
 st.subheader("📊 Market Snapshot")
 
@@ -140,7 +182,7 @@ k3.metric("Distinct Job Titles", f"{len(jobs):,}")
 st.divider()
 
 # --------------------------------------------------
-# 9. CORE CHARTS
+# 10. CORE CHARTS
 # --------------------------------------------------
 c1, c2 = st.columns(2)
 
@@ -163,7 +205,7 @@ safe_plot_bar(
 )
 
 # --------------------------------------------------
-# 10. SALARY INTELLIGENCE
+# 11. SALARY INTELLIGENCE
 # --------------------------------------------------
 st.divider()
 st.header("💰 Salary Intelligence Engine")
@@ -197,6 +239,7 @@ else:
         )
 
     st.subheader("📊 Salary Distribution")
+
     fig = px.histogram(
         salary_distribution(salary_df),
         nbins=40,
@@ -205,7 +248,7 @@ else:
     st.plotly_chart(fig, width="stretch")
 
 # --------------------------------------------------
-# 11. DOWNLOADS
+# 12. EXPORTS
 # --------------------------------------------------
 st.divider()
 st.subheader("⬇️ Export Analytics")
@@ -222,15 +265,12 @@ def download_button(df, name):
     )
 
 d1, d2, d3 = st.columns(3)
-with d1:
-    download_button(skills, "skills")
-with d2:
-    download_button(locations, "locations")
-with d3:
-    download_button(jobs, "jobs")
+download_button(skills, "skills")
+download_button(locations, "locations")
+download_button(jobs, "jobs")
 
 # --------------------------------------------------
-# 12. RAW DATA INSPECTION
+# 13. RAW DATA INSPECTION
 # --------------------------------------------------
 with st.expander("🔍 Inspect Raw Data"):
 

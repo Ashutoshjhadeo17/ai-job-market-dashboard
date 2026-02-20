@@ -1,51 +1,75 @@
+# ==========================================================
+# AI Job Market Spark Analytics (Production Optimized)
+# ==========================================================
+
 from pyspark.sql import SparkSession
 from pyspark.sql.functions import (
     col, explode, split, lower, trim, count, desc
 )
+from pathlib import Path
 import os
-import pandas as pd
 
-# -------------------------------------------------
-# 1. Spark Session (Windows-safe configuration)
-# -------------------------------------------------
+# ==========================================================
+# 1. Optimized Spark Session (Docker-Safe + Memory Bound)
+# ==========================================================
+
 spark = (
     SparkSession.builder
-    .appName("AI Job Market Analysis")
+    .appName("AI Job Market Intelligence")
+
+    # ---- Execution Mode ----
     .master("local[*]")
+
+    # ---- MEMORY CONTROL ----
+    .config("spark.driver.memory", "1g")
+    .config("spark.executor.memory", "1g")
+    .config("spark.executor.cores", "1")
+
+    # ---- PERFORMANCE TUNING ----
     .config("spark.sql.shuffle.partitions", "4")
+    .config("spark.default.parallelism", "4")
+
+    # ---- JVM STABILITY ----
+    .config("spark.driver.extraJavaOptions", "-XX:+UseG1GC")
+
+    # ---- Disable Spark UI (saves memory) ----
+    .config("spark.ui.enabled", "false")
+
+    # ---- Avoid Native Hadoop Warning ----
     .config("spark.hadoop.io.native.lib.available", "false")
+
     .getOrCreate()
 )
 
 spark.sparkContext.setLogLevel("ERROR")
-print("✅ Spark Session Started")
+print("✅ Spark Session Started (Memory Optimized)")
 
-# -------------------------------------------------
-# 2. Load Cleaned Data (STRICT PATH CHECK)
-# -------------------------------------------------
-INPUT_PATH = "data/processed/cleaned_jobs.csv"
+# ==========================================================
+# 2. Load Cleaned Data (Container-Safe Path)
+# ==========================================================
 
-if not os.path.exists(INPUT_PATH):
+INPUT_PATH = Path("/app/data/processed/cleaned_jobs.csv")
+
+if not INPUT_PATH.exists():
     raise FileNotFoundError(
         f"❌ Cleaned data not found at {INPUT_PATH}. "
-        "Run pandas_cleaner.py first."
+        "Run cleaning stage first."
     )
 
-df = spark.read.csv(INPUT_PATH, header=True, inferSchema=True)
+df = spark.read.csv(str(INPUT_PATH), header=True, inferSchema=True)
 
-print(f"✅ Loaded {df.count()} job records")
+row_count = df.count()
+print(f"✅ Loaded {row_count:,} job records")
 df.printSchema()
 
-# -------------------------------------------------
+# ==========================================================
 # 3. Skill Demand Analysis
-# -------------------------------------------------
+# ==========================================================
+
 skills_df = (
     df
     .filter(col("skills").isNotNull())
-    .withColumn(
-        "skill",
-        explode(split(lower(col("skills")), ","))
-    )
+    .withColumn("skill", explode(split(lower(col("skills")), ",")))
     .withColumn("skill", trim(col("skill")))
     .filter(col("skill") != "")
 )
@@ -60,9 +84,10 @@ skill_demand = (
 print("🔥 Top Skills")
 skill_demand.show(10, truncate=False)
 
-# -------------------------------------------------
+# ==========================================================
 # 4. Location Demand Analysis
-# -------------------------------------------------
+# ==========================================================
+
 location_demand = (
     df
     .filter(col("location").isNotNull())
@@ -74,9 +99,10 @@ location_demand = (
 print("📍 Top Locations")
 location_demand.show(10, truncate=False)
 
-# -------------------------------------------------
+# ==========================================================
 # 5. Job Title Demand
-# -------------------------------------------------
+# ==========================================================
+
 job_title_demand = (
     df
     .filter(col("job_title").isNotNull())
@@ -88,30 +114,33 @@ job_title_demand = (
 print("💼 Top Job Titles")
 job_title_demand.show(10, truncate=False)
 
-# -------------------------------------------------
-# 6. Save Outputs (Spark → Pandas → CSV)
-# -------------------------------------------------
-# -------------------------------------------------
-# 6. Save Outputs (ABSOLUTE, PROJECT-ROOT SAFE)
-# -------------------------------------------------
-PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-OUTPUT_DIR = os.path.join(PROJECT_ROOT, "output", "spark")
+# ==========================================================
+# 6. Save Outputs (Safe for Small/Medium Data)
+# ==========================================================
 
-os.makedirs(OUTPUT_DIR, exist_ok=True)
+OUTPUT_DIR = Path("/app/output/spark")
+OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
+
 
 def save_df(spark_df, filename):
+    """
+    Convert small Spark DF to Pandas safely.
+    For large-scale production, this should write parquet instead.
+    """
     pdf = spark_df.toPandas()
-    path = os.path.join(OUTPUT_DIR, filename)
-    pdf.to_csv(path, index=False)
-    print(f"✅ Saved: {path}")
+    output_path = OUTPUT_DIR / filename
+    pdf.to_csv(output_path, index=False)
+    print(f"✅ Saved: {output_path}")
+
 
 save_df(skill_demand, "skill_demand.csv")
 save_df(location_demand, "location_demand.csv")
 save_df(job_title_demand, "job_title_demand.csv")
 
-# -------------------------------------------------
+# ==========================================================
 # 7. Cleanup
-# -------------------------------------------------
+# ==========================================================
+
 spark.stop()
 print("🛑 Spark Session Stopped")
-print("🎉 PHASE 2 COMPLETED SUCCESSFULLY")
+print("🎉 Spark Analytics Completed Successfully")
